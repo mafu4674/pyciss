@@ -12,13 +12,53 @@ from pysis.isis import (ciss2isis, cisscal, dstripe, editlab, getkey, isis2std,
 from pysis.util import file_variations
 
 from . import io
+from pysis.exceptions import ProcessError
+
 
 ISISDATA = Path(os.environ['ISIS3DATA'])
 
+def calib_to_isis(pm_or_path):
+    try:
+        img_name = str(pm_or_path.calib_label)
+    except AttributeError:
+        img_name = str(pm_or_path)
+    (cub_name,) = file_variations(img_name, ['.cub'])
+    try:
+        ciss2isis(from_=img_name, to=cub_name)
+    except ProcessError as e:
+        print("STDOUT:", e.stdout)
+        print("STDERR:", e.stderr)
+        return
+    return cub_name
 
-def calibrate_ciss(img_name, name_only=False):
 
-    img_name = str(img_name)
+def calibrate_ciss(img_name, ringdata=True, map_project=False):
+    """
+    Calibrate raw Cassini ISS images using ISIS.
+
+    ISIS is using an official released version the calibration routine `cisscal`
+    that is being developed under IDL, but has been converted to C++ for ISIS.
+    I am using the pipeline as described here:
+    https://isis.astrogeology.usgs.gov/IsisWorkshop/index.php/Working_with_Cassini_ISS_Data
+    It is customary to indicate the pipeline of ISIS apps that a file went through
+    with a chain of extensions, e.g. '.cal.dst.map.cub', indicating calibration, destriping,
+    and map projection.
+
+    Parameters
+    ----------
+    img_name : pathlib.Path, str
+        Absolute path to image
+
+    Returns
+    -------
+    str : absolute path to map-projected ISIS cube.
+    """
+    # Check if img_name is maybe a PathManager object with a `raw_label` attribute:
+    try:
+        img_name = str(img_name.raw_label)
+    except AttributeError:
+        # doesn't seem to be the case, so I assume it's just a path
+        img_name = str(img_name)
     (cub_name,
      cal_name,
      dst_name,
@@ -27,8 +67,6 @@ def calibrate_ciss(img_name, name_only=False):
                                   '.cal.cub',
                                   '.cal.dst.cub',
                                   '.cal.dst.map.cub'])
-    if name_only:
-        return map_name
     ciss2isis(from_=img_name, to=cub_name)
     targetname = getkey(from_=cub_name,
                         grp='instrument',
@@ -42,13 +80,23 @@ def calibrate_ciss(img_name, name_only=False):
         editlab(from_=cub_name, options='modkey',
                 keyword='TargetName', value='Saturn',
                 grpname='Instrument')
-    spiceinit(from_=cub_name, cksmithed='yes', spksmithed='yes',
-              shape='ringplane')
-    cisscal(from_=cub_name, to=cal_name)
+
+    # perform either normal spiceinit or one for ringdata
+    if ringdata is True:
+        spiceinit(from_=cub_name, cksmithed='yes', spksmithed='yes',
+                  shape='ringplane')
+    else:
+        spiceinit(from_=cub_name, cksmithed='yes', spksmithed='yes')
+
+    cisscal(from_=cub_name, to=cal_name, units='I/F')
     dstripe(from_=cal_name, to=dst_name, mode='horizontal')
-    ringscam2map(from_=dst_name, to=map_name,
-                 map=ISISDATA / 'base/templates/maps/ringcylindrical.map')
-    isis2std(from_=map_name, to=map_name[:-3]+'tif', format='tiff')
+    if map_project:
+        ringscam2map(from_=dst_name, to=map_name, defaultrange='Camera',
+                     map=ISISDATA / 'base/templates/maps/ringcylindrical.map')
+        isis2std(from_=map_name, to=map_name[:-3]+'tif', format='tiff')
+    else:
+        isis2std(from_=dst_name, to=dst_name[:-3]+'tif', format='tiff',
+                 minpercent=0, maxpercent=100)
     return map_name
 
 
