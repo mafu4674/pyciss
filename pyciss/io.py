@@ -1,8 +1,9 @@
-from socket import gethostname
-
-import yaml
 from pathlib import Path
-import pkg_resources as pr
+
+import pandas as pd
+import yaml
+
+from collections import OrderedDict
 
 try:
     from pysis.isis import getkey
@@ -13,11 +14,30 @@ configpath = Path.home() / '.pyciss.yaml'
 
 
 def get_config():
+    """Read the configfile and return config dict.
+
+    Returns
+    -------
+    dict
+        Dictionary with the content of the configpath file.
+    """
     if not configpath.exists():
         raise IOError("Config file .pyciss.yaml not found.")
     else:
-        with open(configpath) as f:
+        with configpath.open() as f:
             return yaml.load(f)
+
+
+# some root level code for config
+
+if not configpath.exists():
+    print("No configuration file {} found.\n".format(configpath))
+    print("Please run `pyciss.io.set_database_path()` and provide the path where\n"
+          "you want to keep your automatically downloaded images.")
+    print("`pyciss` will store this path in {}, where you can easily change it later."
+          .format(configpath))
+else:
+    config = get_config()
 
 
 def set_database_path(dbfolder):
@@ -42,19 +62,37 @@ def set_database_path(dbfolder):
 
 
 def db_mapped_cubes():
-    return dbroot.glob("**/*cal.dst.map.cub")
+    return get_db_root().glob("**/*cal.dst.map.cub")
 
 
 def db_label_paths():
-    return dbroot.glob("*.LBL")
+    return get_db_root().glob("*.LBL")
 
 
 def get_db_root():
-    with configpath.open() as f:
-        d = yaml.load(f)
+    "Read dbroot folder from config and mkdir if required."
+    d = get_config()
     dbroot = Path(d['pyciss_db_path'])
     dbroot.mkdir(exist_ok=True)
     return dbroot
+
+
+def print_db_stats():
+    """Print database stats.
+
+    Returns
+    -------
+    pd.DataFrame
+        Table with the found data items per type.
+    """
+    dbroot = get_db_root()
+    n_ids = len(list(dbroot.glob("[N,W]*")))
+    print("Number of WACs and NACs in database: {}".format(n_ids))
+    print("These kind of data are in the database: (returning pd.DataFrame)")
+    d = {}
+    for key, val in PathManager.extensions.items():
+        d[key] = [len(list(dbroot.glob("**/*"+val)))]
+    return pd.DataFrame(d)
 
 
 class PathManager(object):
@@ -64,7 +102,12 @@ class PathManager(object):
     The `.pyciss.yaml` config file determines the path to the database for ISS images.
     With this class you can access the different kind of files conveniently.
 
-    NOTE: This class will read the .pyciss.yaml to define the pyciss_db path, but
+    Using the stored extensions dictionary, the attributes of the object listed here are created
+    dynamically at object initialization and when the image_id is being set.
+
+    NOTE
+    ----
+    This class will read the .pyciss.yaml to define the pyciss_db path, but
     one can also call it with the savedir argument to override that.
 
     Parameters
@@ -86,79 +129,95 @@ class PathManager(object):
     raw_cub
     raw_label
     cube_path
+    tif
     """
 
-    def __init__(self, img_id, savedir=None):
+    d = {
+        'cubepath': '.cal.dst.map.cub',
+        'cal_cub': '.cal.cub',
+        'dst_cub': '.cal.dst.cub',
+        'raw_cub': '.cub',
+        'raw_label': '.LBL',
+        'raw_image': '.IMG',
+        'calib_img': '_CALIB.IMG',
+        'calib_label': '_CALIB.LBL',
+        'tif': '.cal.dst.map.tif',
+    }
+    # ordered, sorted by key:
+    extensions = OrderedDict(sorted(d.items(), key=lambda t: t[0]))
 
+    def __init__(self, img_id, savedir=None):
+        self.input_img_id = img_id
         if Path(img_id).is_absolute():
+            # the split is to remove the _1.IMG or _2.IMG from the path
+            # for the image id.
             self._id = Path(img_id).name.split('_')[0]
         else:
             # I'm using only filename until _ for storage
+            # TODO: Could this create a problem?
             self._id = img_id[:11]
-        if savedir is not None:
-            self._dbroot = Path(savedir)
+        if savedir is None:
+            self.dbroot = get_db_root()
         else:
-            self._dbroot = get_db_root()
+            self.dbroot = Path(savedir)
 
-        self._basepath = self._dbroot / self._id
+        self.set_version()
+        self.set_attributes()
+
+    def set_version(self):
+        id_ = Path(self.input_img_id).name
+        if len(id_) > 11:
+            self.version = id_[12]
+        else:
+            # if the given id was without version, check if a raw file is in database:
+            try:
+                rawpath = next(self.basepath.glob(self.img_id+"_?.IMG")).name
+            except StopIteration:
+                self.version = '0'
+            else:
+                self.version = rawpath[12]
 
     @property
     def basepath(self):
-        return self._basepath
+        return self.dbroot / self._id
 
     @property
     def img_id(self):
         return self._id
 
-    def check_and_return(self, myiter):
-        l = list(myiter)
-        if l:
-            return l[0]
-        else:
-            print("No file found.")
-            return None
+    @img_id.setter
+    def img_id(self, value):
+        self._id = value
+        self.set_attributes()
 
-    def glob_for_pattern(self, pattern):
-        return self.check_and_return(self.basepath.glob(self._id + pattern))
+    def set_attributes(self):
+        for k, v in self.extensions.items():
+            path = self.basepath / ("{}_{}{}".format(self.img_id,
+                                                     self.version,
+                                                     v))
+            setattr(self, k, path)
 
-    @property
-    def calib_img(self):
-        return self.glob_for_pattern("*_CALIB.IMG")
+    def __str__(self):
+        s = ''
+        for k, v in self.extensions.items():
+            s += "{}: ".format(k)
+            path = getattr(self, k)
+            if path.exists():
+                s += "{}\n".format(path)
+            else:
+                s += "not found.\n"
+        return s
 
-    @property
-    def calib_label(self):
-        return self.glob_for_pattern("*_CALIB.LBL")
+    def __repr__(self):
+        return self.__str__()
 
-    @property
-    def raw_image(self):
-        return self.glob_for_pattern("*_?.IMG")
 
-    @property
-    def raw_cub(self):
-        return self.glob_for_pattern("*_?.cub")
+class DBManager():
+    def __init__(self):
+        self.dbroot = get_db_root()
 
-    @property
-    def cal_cub(self):
-        return self.glob_for_pattern("*_?.cal.cub")
-
-    @property
-    def dst_cub(self):
-        "pathlib.Path : Path to destriped calibrated unprojected product."
-        return self.glob_for_pattern("*_?.cal.dst.cub")
-
-    @property
-    def raw_label(self):
-        try:
-            return self.raw_image.with_suffix('.LBL')
-        except AttributeError:
-            return None
-
-    @property
-    def cubepath(self):
-        try:
-            return self.raw_label.with_suffix('.cal.dst.map.cub')
-        except AttributeError:
-            return None
+    def print_stats(self):
+        print_db_stats()
 
 
 def is_lossy(label):

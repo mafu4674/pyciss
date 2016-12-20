@@ -3,11 +3,12 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from astropy import units as u
+
 from pysis import CubeFile
 
 from .io import PathManager
-from .meta import get_all_resonances
-from .meta import get_meta_df
+from .meta import get_all_resonances, get_meta_df
 from .opusapi import MetaData
 
 try:
@@ -22,6 +23,7 @@ else:
 
 resonances = get_all_resonances()
 meta_df = get_meta_df()
+
 
 def calc_4_3(width):
     "Calculate 4:3 ration for figures so that they import nicely in prezzies."
@@ -66,28 +68,28 @@ class RingCube(CubeFile):
     @property
     def minrad(self):
         "float: MinimumRingRadius in Mm."
-        return self.mapping_label['MinimumRingRadius']/1e6
+        return self.mapping_label['MinimumRingRadius']/1e6 * u.Mm
 
     @property
     def minrad_km(self):
-        return self.minrad * 1000
+        return self.minrad.to(u.km)
 
     @property
     def maxrad(self):
         "float: MaxiumRingRadius in Mm."
-        return self.mapping_label['MaximumRingRadius']/1e6
+        return self.mapping_label['MaximumRingRadius']/1e6 * u.Mm
 
     @property
     def maxrad_km(self):
-        return self.maxrad * 1000
+        return self.maxrad.to(u.km)
 
     @property
     def minlon(self):
-        return self.mapping_label['MinimumRingLongitude']
+        return self.mapping_label['MinimumRingLongitude'] * u.degree
 
     @property
     def maxlon(self):
-        return self.mapping_label['MaximumRingLongitude']
+        return self.mapping_label['MaximumRingLongitude'] * u.degree
 
     @property
     def img(self):
@@ -96,15 +98,11 @@ class RingCube(CubeFile):
 
     @property
     def extent(self):
-        return [self.minlon, self.maxlon, self.minrad, self.maxrad]
+        return [i.value for i in [self.minlon, self.maxlon, self.minrad, self.maxrad]]
 
     @property
     def resolution_val(self):
-        return self.mapping_label['PixelResolution'].value
-
-    @property
-    def resolution_unit(self):
-        return self.mapping_label['PixelResolution'].units
+        return self.mapping_label['PixelResolution'].value * u.m / u.pixel
 
     @property
     def plottitle(self):
@@ -115,8 +113,12 @@ class RingCube(CubeFile):
         return self.filename.split('.')[0] + '.png'
 
     def imshow(self, data=None, plow=1, phigh=99, save=False, ax=None, fig=None,
-               interpolation='sinc', extra_title=None, show_resonances=True,
+               interpolation='sinc', extra_title=None, show_resonances='some',
                set_extent=True, **kwargs):
+        """Powerful default display that is broken without resonances. :(
+
+        show_resonances can be True, a list, 'all', or 'some'
+        """
         if data is None:
             data = self.img
         extent_val = self.extent if set_extent else None
@@ -157,19 +159,21 @@ class RingCube(CubeFile):
     def set_resonance_axis(self, ax, show_resonances):
         filter1 = (resonances['radius'] > (self.minrad_km))
         filter2 = (resonances['radius'] < (self.maxrad_km))
+        if show_resonances == 'some':
+            show_resonances = ['janus', 'prometheus', 'epimetheus']
         try:
             filter3 = (resonances.moon.isin(show_resonances))
         except TypeError:
-            # if show_resonances not a list, do nothing:
+            # if show_resonances not a list, do nothing, == 'all'
             filter3 = True
         newticks = resonances[filter1 & filter2 & filter3]
         ax2 = ax.twinx()
-        ax2.set_ybound(self.minrad, self.maxrad)
+        ax2.set_ybound(self.minrad.value, self.maxrad.value)
         ax2.ticklabel_format(useOffset=False)
         # i plot in Mm, hence the division by 1000 here.
         ax2.set_yticks(newticks.radius/1000)
         ax2.set_yticklabels(newticks.name)
-        return ax2
+        self.resonance_axis = ax2
 
     @property
     def mean_profile(self):

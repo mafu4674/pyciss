@@ -1,21 +1,27 @@
 """ Note that the calibration starts from the LBL files, not the IMG !!! """
 from __future__ import division, print_function
 
+import logging
 import os
 from os.path import join as pjoin
+from pathlib import Path
 
 import numpy as np
-from pathlib import Path
-from pysis import IsisPool
-from pysis.isis import (ciss2isis, cisscal, dstripe, editlab, getkey, isis2std,
-                        ringscam2map, spiceinit)
-from pysis.util import file_variations
+
+try:
+    from pysis import IsisPool
+    from pysis.exceptions import ProcessError
+    from pysis.isis import (ciss2isis, cisscal, dstripe, editlab, getkey, isis2std,
+                            ringscam2map, spiceinit)
+    from pysis.util import file_variations
+except ImportError:
+    print("Cannot load the ISIS system. pipeline module not functional.")
+else:
+    ISISDATA = Path(os.environ['ISIS3DATA'])
 
 from . import io
-from pysis.exceptions import ProcessError
 
 
-ISISDATA = Path(os.environ['ISIS3DATA'])
 
 def calib_to_isis(pm_or_path):
     try:
@@ -68,6 +74,7 @@ def calibrate_ciss(img_name, ringdata=True, map_project=False):
                                   '.cal.dst.cub',
                                   '.cal.dst.map.cub'])
     ciss2isis(from_=img_name, to=cub_name)
+    logging.info("Import to ISIS done.")
     targetname = getkey(from_=cub_name,
                         grp='instrument',
                         keyword='targetname')
@@ -87,16 +94,20 @@ def calibrate_ciss(img_name, ringdata=True, map_project=False):
                   shape='ringplane')
     else:
         spiceinit(from_=cub_name, cksmithed='yes', spksmithed='yes')
-
+    logging.info("spiceinit done.")
     cisscal(from_=cub_name, to=cal_name, units='I/F')
+    logging.info('cisscal done.')
     dstripe(from_=cal_name, to=dst_name, mode='horizontal')
+    logging.info('Destriping done.')
     if map_project:
         ringscam2map(from_=dst_name, to=map_name, defaultrange='Camera',
                      map=ISISDATA / 'base/templates/maps/ringcylindrical.map')
         isis2std(from_=map_name, to=map_name[:-3]+'tif', format='tiff')
+        logging.info('Map projecting done. Function finished.')
     else:
         isis2std(from_=dst_name, to=dst_name[:-3]+'tif', format='tiff',
                  minpercent=0, maxpercent=100)
+        logging.warning('Map projection was skipped, set map_project to True if wanted.')
     return map_name
 
 
@@ -124,10 +135,3 @@ def remove_mean_value(data, axis=1):
     mean_value = np.nanmean(data, axis=axis)
     subtracted = data - mean_value[:, np.newaxis]
     return subtracted
-
-
-def pipeline(fname):
-    try:
-        map_name = calibrate_ciss(fname)
-    except AttributeError:
-        return "Problem with {}".format(fname)

@@ -4,12 +4,14 @@ for OPUS data, metadata, and preview images.
 """
 from __future__ import division, print_function
 
+from pathlib import Path
+
 import pandas as pd
 import requests
 from IPython.display import HTML, display
-from pathlib import Path
 
 from . import io
+from . import pipeline
 
 try:
     from urllib.request import unquote, urlretrieve
@@ -53,8 +55,8 @@ class MetaData(object):
 
     @property
     def surface_geom(self):
-        """dict: Cassini surface geometry dictionary of the metadata"""
-        return self.r['Cassini Surface Geometry']
+        """dict: Saturn surface geometry dictionary of the metadata"""
+        return self.r['Saturn Surface Geometry']
 
     @property
     def mission(self):
@@ -75,11 +77,6 @@ class MetaData(object):
     def iss(self):
         """dict: ISS instrument related metadata dictionary"""
         return self.r['Cassini ISS Constraints']
-
-    @property
-    def surface(self):
-        """dict: Saturn surface geometry metadata dictionary"""
-        return self.r['Saturn Surface Geometry']
 
     @property
     def target_name(self):
@@ -360,3 +357,20 @@ class OPUS(object):
             basename = Path(obsid.medium_img_url).name
             print("Downloading", basename)
             urlretrieve(obsid.medium_img_url, str(pm.basepath / basename))
+
+
+def download_and_calibrate(img_id, map_project=True):
+    opus = OPUS()
+    opus.query_image_id(img_id)
+
+    # if query returned satisfying results.
+    # Mostly will be 4 results, label + image for raw data, and label+image for calibrated image
+    opus.download_results()
+
+    # now you need a PathManager object that knows where your data is
+    pm = io.PathManager(img_id)
+
+    # and then you start the calibration pipeline, starting from the label
+    # file which points to the image data, ISIS will find it:
+
+    pipeline.calibrate_ciss(pm.raw_label, map_project=map_project)
